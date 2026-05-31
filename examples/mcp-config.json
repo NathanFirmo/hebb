@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hebb": {
+      "command": "hebb",
+      "args": ["mcp"]
+    }
+  }
+}
+
