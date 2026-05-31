@@ -8,8 +8,13 @@ vars:
   GO_TAGS: sqlite_fts5
 
 tasks:
+  default:
+    desc: Lista todas as tasks disponíveis
+    cmds:
+      - task --list-all
+
   build:
-    desc: Build the Hebb CLI binary
+    desc: Compila o binário CLI do Hebb em bin/hebb
     cmds:
       - mkdir -p {{.BUILD_DIR}}
       - go build -tags "{{.GO_TAGS}}" -o {{.BUILD_PATH}} ./cmd/hebb
@@ -23,23 +28,23 @@ tasks:
       - "{{.BUILD_PATH}}"
 
   install:
-    desc: Build and install the Hebb binary into /usr/bin
+    desc: Compila e instala o binário do Hebb em /usr/bin
     deps:
       - build
     cmds:
       - sudo install -m 0755 {{.BUILD_PATH}} {{.INSTALL_PATH}}
 
   uninstall:
-    desc: Remove the Hebb binary from /usr/bin
+    desc: Remove o binário do Hebb de /usr/bin
     cmds:
       - sudo rm -f {{.INSTALL_PATH}}
 
   clean:
-    desc: Remove build artifacts
+    desc: Remove artefatos locais de build
     cmds:
       - rm -rf {{.BUILD_DIR}}
 
   test:
-    desc: Run Go tests
+    desc: Executa os testes Go com suporte a SQLite FTS5
     cmds:
       - go test -tags "{{.GO_TAGS}}" ./...

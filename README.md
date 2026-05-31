@@ -2,7 +2,9 @@
 
 Hebb is a local-first long-term memory engine for AI agents.
 
-The name comes from Donald Hebb and the phrase: "Neurons that fire together wire together." Hebb applies that idea to agent memory: facts, observations, decisions and entities that appear together can become associated, reinforced and easier to retrieve over time.
+> The name comes from Donald Hebb and the phrase: "Neurons that fire together wire together."
+>
+> Hebb applies that idea to agent memory: facts, observations, decisions and entities that appear together can become associated, reinforced and easier to retrieve over time.
 
 Hebb is not just another vector database. It is a local memory layer for agents, built around traces, entities, associations, retrieval, reinforcement, inhibition and consolidation.
 
@@ -62,17 +64,43 @@ For tests or custom setups, use `HEBB_HOME`, `HEBB_DB_PATH`, `--home` or `--db`.
 ## CLI
 
 ```bash
+# Creates ~/.hebb/hebb.db, applies the schema and tries to detect the local embedding dimensions.
 hebb init
+
+# Checks SQLite, sqlite-vec, configured paths and Ollama availability.
 hebb doctor
-hebb encode
-hebb retrieve
-hebb associate
-hebb reinforce
-hebb inhibit
-hebb forget
-hebb consolidate
-hebb inspect
-hebb maintain
+
+# Stores a durable memory trace and links optional entities.
+hebb encode --kind decision --title "Use sqlite-vec" --body "Hebb keeps vectors inside SQLite." --entity Hebb --scope /repo
+
+# Retrieves memory using structured filters, FTS5 and vector search when embeddings are available.
+hebb retrieve "how does Hebb store vectors?" --scope /repo --limit 10
+
+# Creates or reinforces an associative edge between two traces.
+hebb associate 1 2 --relation supports
+
+# Increases strength, salience and confidence after a trace is useful or confirmed.
+hebb reinforce 1 --reason "used_in_answer"
+
+# Lowers priority for stale, noisy or contradicted memory without deleting it.
+hebb inhibit 2 --reason "stale_or_noisy"
+
+# Marks a trace as forgotten by default. Hard delete requires --hard --yes.
+hebb forget 2 --soft
+
+# Creates a conservative semantic summary for a scope and marks active traces as consolidated.
+hebb consolidate --scope /repo
+
+# Inspects traces, entities or aggregate memory statistics.
+hebb inspect trace 1
+hebb inspect entity Hebb
+hebb inspect stats
+
+# Runs maintenance jobs such as embedding backfill or gradual decay.
+hebb maintain embed --pending
+hebb maintain decay --dry-run
+
+# Starts the MCP server over stdin/stdout for agent integrations.
 hebb mcp
 ```
 
