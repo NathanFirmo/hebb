@@ -34,6 +34,8 @@ hebb inspect entity Hebb
 hebb maintain embed --pending
 hebb maintain decay --dry-run
 hebb mcp
+hebb agent install --agent codex --apply
+hebb agent install --agent claude --apply
 ```
 
 Aliases:
@@ -42,3 +44,16 @@ Aliases:
 - `recall` -> `retrieve`
 - `link` -> `associate`
 
+## Agent Setup
+
+Use `hebb agent install` to configure supported agents for proactive memory use.
+
+```bash
+hebb agent install --agent codex
+hebb agent install --agent claude
+hebb agent install --agent all
+```
+
+Add `--apply` to write changes. Without `--apply`, Hebb prints the plan.
+
+Codex setup registers MCP and adds managed instructions. Claude setup registers MCP, adds lifecycle hooks and adds managed instructions. Hooks call `hebb agent hook ...` internally.

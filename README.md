@@ -102,6 +102,15 @@ hebb maintain decay --dry-run
 
 # Starts the MCP server over stdin/stdout for agent integrations.
 hebb mcp
+
+# Configures an agent to use Hebb proactively. Without --apply, prints the plan.
+hebb agent install --agent codex --apply
+hebb agent install --agent claude --apply
+
+# Internal lifecycle entrypoints used by installed hooks.
+hebb agent hook session-start
+hebb agent hook user-prompt-submit
+hebb agent hook stop
 ```
 
 Aliases:
@@ -109,6 +118,38 @@ Aliases:
 - `remember` -> `encode`
 - `recall` -> `retrieve`
 - `link` -> `associate`
+
+## Agent Integration
+
+Hebb can configure supported agents so memory is used naturally during normal interaction. The goal is that the agent retrieves useful context at the start of work and saves durable learnings as they appear, without requiring prompts like "search the MCP" or "save this to memory".
+
+Preview the install plan:
+
+```bash
+hebb agent install --agent codex
+hebb agent install --agent claude
+```
+
+Apply the integration:
+
+```bash
+hebb agent install --agent codex --apply
+hebb agent install --agent claude --apply
+```
+
+Codex installation registers the `hebb` MCP server and writes managed memory instructions to `~/.codex/AGENTS.md`.
+
+Claude installation writes the `hebb` MCP server to `~/.claude/mcp.json`, adds lifecycle hooks to `~/.claude/settings.json`, and writes managed memory instructions to `~/.claude/CLAUDE.md`.
+
+Installed Claude hooks call:
+
+```bash
+hebb agent hook session-start
+hebb agent hook user-prompt-submit
+hebb agent hook stop
+```
+
+The hooks load relevant memory as additional context and capture durable-looking preferences, decisions, procedures, warnings and conventions. Hebb intentionally avoids saving every raw transcript line; memory should stay useful, not noisy.
 
 ## Data Model
 

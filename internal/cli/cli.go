@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nathan/hebb/internal/agent"
 	"github.com/nathan/hebb/internal/associate"
 	"github.com/nathan/hebb/internal/config"
 	"github.com/nathan/hebb/internal/embed"
@@ -51,6 +53,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return runMaintain(args, stdout)
 	case "mcp":
 		return runMCP(args, stdout)
+	case "agent":
+		return runAgent(args, stdout)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -488,6 +492,59 @@ func runMCP(args []string, stdout io.Writer) error {
 	return mcp.Serve(context.Background(), s, stdout, nil)
 }
 
+func runAgent(args []string, stdout io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: hebb agent install --agent codex|claude|all [--apply] | hebb agent hook <mode> | hebb agent instructions")
+	}
+	switch args[0] {
+	case "install":
+		return runAgentInstall(args[1:], stdout)
+	case "hook":
+		return runAgentHook(args[1:], stdout)
+	case "instructions":
+		return runAgentInstructions(args[1:], stdout)
+	default:
+		return fmt.Errorf("unknown agent command %q", args[0])
+	}
+}
+
+func runAgentInstall(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("agent install", flag.ContinueOnError)
+	agentName := fs.String("agent", "all", "agent to configure: codex, claude or all")
+	apply := fs.Bool("apply", false, "write changes instead of printing the install plan")
+	force := fs.Bool("force", false, "reserved for future overwrite behavior")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return agent.Installer{Stdout: stdout}.Install(ctx, agent.InstallOptions{Agent: *agentName, Apply: *apply, Force: *force})
+}
+
+func runAgentHook(args []string, stdout io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: hebb agent hook session-start|user-prompt-submit|stop")
+	}
+	s, _, err := openStore("", "")
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return agent.HandleHook(ctx, s, args[0], os.Stdin, stdout)
+}
+
+func runAgentInstructions(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("agent instructions", flag.ContinueOnError)
+	agentName := fs.String("agent", "generic", "agent name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, agent.Instructions(*agentName))
+	return nil
+}
+
 func parseRelationArgs(args []string) (string, string, string, []string, error) {
 	var relation string
 	var home string
@@ -620,6 +677,8 @@ Usage:
   hebb maintain embed --pending
   hebb maintain decay --dry-run
   hebb mcp
+  hebb agent install --agent codex --apply
+  hebb agent install --agent claude --apply
 
 Aliases:
   remember -> encode
