@@ -57,3 +57,5 @@ hebb agent install --agent all
 Add `--apply` to write changes. Without `--apply`, Hebb prints the plan.
 
 Codex setup registers MCP and adds managed instructions. Claude setup registers MCP, adds lifecycle hooks and adds managed instructions. Hooks call `hebb agent hook ...` internally.
+
+The hook capture policy is conservative: `session-start` and `user-prompt-submit` can load relevant context, `user-prompt-submit` may save explicit durable preferences or decisions, and `stop` does not save final assistant messages by default.

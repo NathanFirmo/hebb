@@ -149,7 +149,7 @@ hebb agent hook user-prompt-submit
 hebb agent hook stop
 ```
 
-The hooks load relevant memory as additional context and capture durable-looking preferences, decisions, procedures, warnings and conventions. Hebb intentionally avoids saving every raw transcript line; memory should stay useful, not noisy.
+The hooks load relevant memory as additional context and conservatively capture durable-looking user prompts, such as explicit preferences, decisions, procedures and conventions. `stop` is intentionally non-capturing by default to avoid saving generic final answers, command outputs or task-status chatter. Hebb intentionally avoids saving every raw transcript line; memory should stay useful, not noisy.
 
 ## Data Model
 

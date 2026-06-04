@@ -168,6 +168,8 @@ When a memory is useful, reinforce it with `+"`hebb_reinforce_trace`"+`. When a 
 
 Keep memory hygienic. Do not store secrets, credentials, raw transcript dumps or short-lived implementation chatter. Prefer concise traces with clear titles and actionable bodies.
 
+Only save memory when the content is clearly durable. Avoid saving your own final status messages, command outputs, generic summaries or implementation chatter.
+
 Use global memory by default. Add a scope only when the user explicitly wants a memory restricted to a project or context.
 
 Agent configured by: %s
@@ -212,7 +214,7 @@ func hookUserPrompt(ctx context.Context, s *store.Store, payload HookInput, outp
 		return nil
 	}
 	results, _ := s.Retrieve(ctx, store.RetrieveOptions{Query: prompt, Limit: 6})
-	if shouldCapturePrompt(prompt) {
+	if shouldCaptureUserPrompt(prompt) {
 		_, _ = s.CreateTrace(ctx, store.TraceInput{
 			Kind:       memory.TraceObservation,
 			Title:      firstLine(prompt, 80),
@@ -231,25 +233,6 @@ func hookUserPrompt(ctx context.Context, s *store.Store, payload HookInput, outp
 }
 
 func hookStop(ctx context.Context, s *store.Store, payload HookInput, output io.Writer) error {
-	message := strings.TrimSpace(payload.LastAssistantMessage)
-	if message == "" {
-		message = strings.TrimSpace(payload.Reason)
-	}
-	if message == "" {
-		return nil
-	}
-	if !shouldCapturePrompt(message) {
-		return nil
-	}
-	_, _ = s.CreateTrace(ctx, store.TraceInput{
-		Kind:       memory.TraceObservation,
-		Title:      "Agent turn completed: " + firstLine(message, 60),
-		Body:       truncate(message, 4000),
-		Source:     "hebb agent hook:stop",
-		Confidence: 0.45,
-		Strength:   0.3,
-		Salience:   0.3,
-	}, nil)
 	return nil
 }
 
@@ -269,20 +252,55 @@ func formatRetrieved(results []store.RetrievedTrace) string {
 		if result.Trace.Status != memory.StatusActive {
 			continue
 		}
+		if isNoisyAutoTrace(result.Trace) {
+			continue
+		}
 		fmt.Fprintf(&b, "- [%d] %s: %s\n", result.Trace.ID, result.Trace.Title, strings.TrimSpace(result.Trace.Body))
 	}
 	return strings.TrimSpace(b.String())
 }
 
-func shouldCapturePrompt(text string) bool {
-	text = strings.ToLower(text)
-	keywords := []string{
-		"prefiro", "preferência", "preference", "remember", "lembra", "salva", "sempre", "nunca",
-		"decidimos", "decisão", "decision", "convenção", "padrão", "procedimento", "runbook",
-		"gotcha", "cuidado", "warning", "importante",
+func shouldCaptureUserPrompt(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
 	}
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
+	if looksLikeCommandOutput(lower) {
+		return false
+	}
+	strongPatterns := []string{
+		"prefiro ", "eu prefiro", "minha preferência", "lembre", "lembra que", "salva ", "salve ",
+		"remember that", "please remember", "always ", "never ", "sempre ", "nunca ",
+		"decidimos ", "decisão:", "decision:", "convenção:", "procedimento:", "runbook:",
+	}
+	for _, pattern := range strongPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func isNoisyAutoTrace(trace memory.Trace) bool {
+	if strings.HasPrefix(trace.Title, "Agent turn completed:") {
+		return true
+	}
+	if strings.Contains(trace.Source, "hebb agent hook:stop") {
+		return true
+	}
+	if looksLikeCommandOutput(strings.ToLower(trace.Body)) {
+		return true
+	}
+	return false
+}
+
+func looksLikeCommandOutput(text string) bool {
+	markers := []string{
+		"ran git ", "called hebb.", "git status --short", "git branch --show-current", "git log -1",
+		"exit status", "process exited", "wall time:", "chunk id:",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
 			return true
 		}
 	}
