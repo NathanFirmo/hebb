@@ -5,7 +5,6 @@ vars:
   BUILD_DIR: bin
   BUILD_PATH: "{{.BUILD_DIR}}/{{.BINARY}}"
   INSTALL_PATH: /usr/bin/{{.BINARY}}
-  GO_TAGS: sqlite_fts5
 
 tasks:
   default:
@@ -17,7 +16,7 @@ tasks:
     desc: Compila o binário CLI do Hebb em bin/hebb
     cmds:
       - mkdir -p {{.BUILD_DIR}}
-      - go build -tags "{{.GO_TAGS}}" -o {{.BUILD_PATH}} ./cmd/hebb
+      - go build -o {{.BUILD_PATH}} ./cmd/hebb
     sources:
       - go.mod
       - cmd/**/*.go
@@ -33,6 +32,8 @@ tasks:
       - build
     cmds:
       - sudo install -m 0755 {{.BUILD_PATH}} {{.INSTALL_PATH}}
+      - hebb agent install --agent codex --apply
+      - hebb agent install --agent claude --apply
 
   uninstall:
     desc: Remove o binário do Hebb de /usr/bin
@@ -45,6 +46,6 @@ tasks:
       - rm -rf {{.BUILD_DIR}}
 
   test:
-    desc: Executa os testes Go com suporte a SQLite FTS5
+    desc: Executa os testes Go
     cmds:
-      - go test -tags "{{.GO_TAGS}}" ./...
+      - go test ./...

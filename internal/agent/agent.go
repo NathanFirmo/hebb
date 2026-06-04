@@ -13,13 +13,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nathan/hebb/internal/embed"
 	"github.com/nathan/hebb/internal/memory"
 	"github.com/nathan/hebb/internal/store"
 )
 
 const (
-	managedStart = "<!-- BEGIN HEBB MEMORY -->"
-	managedEnd   = "<!-- END HEBB MEMORY -->"
+	managedStart      = "<!-- BEGIN HEBB MEMORY -->"
+	managedEnd        = "<!-- END HEBB MEMORY -->"
+	codexPluginName   = "hebb-memory"
+	codexMarketplace  = "personal"
+	codexPluginParent = "~/plugins"
 )
 
 type InstallOptions struct {
@@ -32,6 +36,7 @@ type HookInput struct {
 	HookEventName        string         `json:"hook_event_name"`
 	CWD                  string         `json:"cwd"`
 	UserPrompt           string         `json:"user_prompt"`
+	Prompt               string         `json:"prompt"`
 	Reason               string         `json:"reason"`
 	LastAssistantMessage string         `json:"last_assistant_message"`
 	ToolName             string         `json:"tool_name"`
@@ -77,6 +82,26 @@ func (i Installer) Install(ctx context.Context, opts InstallOptions) error {
 }
 
 func (i Installer) installCodex(ctx context.Context) error {
+	pluginPath, err := expandHome(codexPluginParent + "/" + codexPluginName)
+	if err != nil {
+		return err
+	}
+	marketplacePath, err := expandHome("~/.agents/plugins/marketplace.json")
+	if err != nil {
+		return err
+	}
+	if err := writeCodexPlugin(pluginPath); err != nil {
+		return err
+	}
+	if err := ensureCodexMarketplace(marketplacePath); err != nil {
+		return err
+	}
+	if err := runBestEffort(ctx, "codex", "plugin", "remove", codexPluginName+"@"+codexMarketplace); err != nil {
+		fmt.Fprintf(i.Stdout, "codex plugin remove skipped: %v\n", err)
+	}
+	if err := run(ctx, "codex", "plugin", "add", codexPluginName, "--marketplace", codexMarketplace); err != nil {
+		return err
+	}
 	if err := runBestEffort(ctx, "codex", "mcp", "remove", "hebb"); err != nil {
 		fmt.Fprintf(i.Stdout, "codex mcp remove skipped: %v\n", err)
 	}
@@ -90,12 +115,12 @@ func (i Installer) installCodex(ctx context.Context) error {
 	if err := upsertManagedBlock(path, Instructions("codex")); err != nil {
 		return err
 	}
-	fmt.Fprintln(i.Stdout, "Codex configured with Hebb MCP and managed memory instructions.")
+	fmt.Fprintf(i.Stdout, "Codex configured with Hebb MCP, local plugin hooks and managed memory instructions.\nplugin: %s\n", pluginPath)
 	return nil
 }
 
 func (i Installer) installClaude(ctx context.Context) error {
-	mcpPath, err := expandHome("~/.claude/mcp.json")
+	mcpPath, err := expandHome("~/.claude.json")
 	if err != nil {
 		return err
 	}
@@ -123,16 +148,19 @@ func (i Installer) installClaude(ctx context.Context) error {
 func Plan(agent string) string {
 	if agent == "codex" {
 		return `Hebb agent install plan for Codex:
+- Create/update local plugin ~/plugins/hebb-memory
+- Add plugin entry to ~/.agents/plugins/marketplace.json
+- Install plugin with: codex plugin add hebb-memory --marketplace personal
+- Plugin provides Hebb MCP, memory skill instructions and UserPromptSubmit/PostToolUse hooks
 - Register MCP server: codex mcp add hebb -- hebb mcp
 - Upsert managed instructions in ~/.codex/AGENTS.md
-- Instruct Codex to retrieve and save Hebb memories proactively through MCP tools
 
 Run with --apply to write these changes.`
 	}
 	if agent == "claude" {
 		return `Hebb agent install plan for Claude:
-- Add MCP server "hebb" to ~/.claude/mcp.json
-- Add SessionStart, UserPromptSubmit and Stop hooks to ~/.claude/settings.json
+- Add MCP server "hebb" to ~/.claude.json
+- Add UserPromptSubmit and Stop hooks to ~/.claude/settings.json
 - Upsert managed instructions in ~/.claude/CLAUDE.md
 - Hooks call hebb agent hook ... so context loading and capture happen automatically
 
@@ -193,6 +221,8 @@ func HandleHook(ctx context.Context, s *store.Store, mode string, input io.Reade
 		return hookUserPrompt(ctx, s, payload, output)
 	case "stop":
 		return hookStop(ctx, s, payload, output)
+	case "codex-post-tool-use":
+		return hookCodexPostToolUse(ctx, s, payload, output)
 	default:
 		return fmt.Errorf("unknown hook mode %q", mode)
 	}
@@ -203,17 +233,21 @@ func hookSessionStart(ctx context.Context, s *store.Store, payload HookInput, ou
 	results, _ := s.Retrieve(ctx, store.RetrieveOptions{Query: query, Limit: 8})
 	contextText := formatRetrieved(results)
 	if contextText == "" {
-		return writeHookContext(output, "Hebb memory is enabled. No relevant memories were found yet.")
+		return writeHookContext(output, "SessionStart", "Hebb memory is enabled. No relevant memories were found yet.")
 	}
-	return writeHookContext(output, "Relevant Hebb memories:\n\n"+contextText)
+	return writeHookContext(output, "SessionStart", "Relevant Hebb memories:\n\n"+contextText)
 }
 
 func hookUserPrompt(ctx context.Context, s *store.Store, payload HookInput, output io.Writer) error {
 	prompt := strings.TrimSpace(payload.UserPrompt)
 	if prompt == "" {
+		prompt = strings.TrimSpace(payload.Prompt)
+	}
+	if prompt == "" {
 		return nil
 	}
-	results, _ := s.Retrieve(ctx, store.RetrieveOptions{Query: prompt, Limit: 6})
+	vector := embedHookQuery(ctx, prompt)
+	results, _ := s.Retrieve(ctx, store.RetrieveOptions{Query: prompt, Limit: 12, Vector: vector, MinVectorScore: 0.72})
 	if shouldCaptureUserPrompt(prompt) {
 		_, _ = s.CreateTrace(ctx, store.TraceInput{
 			Kind:       memory.TraceObservation,
@@ -229,16 +263,60 @@ func hookUserPrompt(ctx context.Context, s *store.Store, payload HookInput, outp
 	if contextText == "" {
 		return nil
 	}
-	return writeHookContext(output, "Hebb recalled potentially relevant memories:\n\n"+contextText)
+	return writeHookContext(output, "UserPromptSubmit", "Hebb recalled potentially relevant memories:\n\n"+contextText)
+}
+
+func embedHookQuery(ctx context.Context, query string) []float32 {
+	vector, err := embed.NewClient("", "").Embed(ctx, query)
+	if err != nil {
+		return nil
+	}
+	return vector
 }
 
 func hookStop(ctx context.Context, s *store.Store, payload HookInput, output io.Writer) error {
 	return nil
 }
 
-func writeHookContext(output io.Writer, text string) error {
+func hookCodexPostToolUse(ctx context.Context, s *store.Store, payload HookInput, output io.Writer) error {
+	text := codexToolText(payload)
+	if !shouldCaptureUserPrompt(text) {
+		return nil
+	}
+	_, _ = s.CreateTrace(ctx, store.TraceInput{
+		Kind:       memory.TraceObservation,
+		Title:      firstLine(text, 80),
+		Body:       truncate(text, 4000),
+		Source:     "hebb codex plugin:post-tool-use",
+		Confidence: 0.45,
+		Strength:   0.3,
+		Salience:   0.3,
+	}, nil)
+	return nil
+}
+
+func codexToolText(payload HookInput) string {
+	var parts []string
+	if payload.ToolName != "" {
+		parts = append(parts, payload.ToolName)
+	}
+	if len(payload.ToolInput) > 0 {
+		if data, err := json.Marshal(payload.ToolInput); err == nil {
+			parts = append(parts, string(data))
+		}
+	}
+	if payload.ToolResult != nil {
+		if data, err := json.Marshal(payload.ToolResult); err == nil {
+			parts = append(parts, string(data))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func writeHookContext(output io.Writer, event, text string) error {
 	response := map[string]any{
 		"hookSpecificOutput": map[string]any{
+			"hookEventName":     event,
 			"additionalContext": text,
 		},
 		"systemMessage": text,
@@ -327,6 +405,194 @@ func ensureHebbReady(ctx context.Context) error {
 	return run(ctx, "hebb", "init")
 }
 
+func writeCodexPlugin(pluginPath string) error {
+	files := map[string][]byte{
+		filepath.Join(pluginPath, ".codex-plugin", "plugin.json"):      []byte(codexPluginManifest()),
+		filepath.Join(pluginPath, ".mcp.json"):                         []byte(codexPluginMCP()),
+		filepath.Join(pluginPath, "hooks", "hooks.json"):               []byte(codexPluginHooks()),
+		filepath.Join(pluginPath, "scripts", "user_prompt_submit.sh"):  []byte(codexUserPromptSubmitScript()),
+		filepath.Join(pluginPath, "scripts", "post_tool_use.sh"):       []byte(codexPostToolUseScript()),
+		filepath.Join(pluginPath, "skills", "hebb-memory", "SKILL.md"): []byte(codexMemorySkill()),
+	}
+	for path, data := range files {
+		perm := os.FileMode(0o644)
+		if strings.HasSuffix(path, ".sh") {
+			perm = 0o755
+		}
+		if err := writeFileWithBackup(path, data, perm); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(pluginPath, "hooks.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(filepath.Join(pluginPath, "scripts", "session_start.sh")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func codexPluginManifest() string {
+	return `{
+  "name": "hebb-memory",
+  "version": "0.1.0",
+  "description": "Local-first long-term memory for Codex using Hebb.",
+  "author": {
+    "name": "Hebb contributors"
+  },
+  "homepage": "https://github.com/NathanFirmo/hebb",
+  "repository": "https://github.com/NathanFirmo/hebb",
+  "license": "MIT",
+  "keywords": ["memory", "mcp", "local-first", "agents"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Hebb Memory",
+    "shortDescription": "Local long-term memory for Codex",
+    "longDescription": "Adds Hebb as a local-first memory layer for Codex with MCP tools, conservative memory instructions and lifecycle hooks.",
+    "developerName": "Hebb",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/NathanFirmo/hebb",
+    "privacyPolicyURL": "https://github.com/NathanFirmo/hebb",
+    "termsOfServiceURL": "https://github.com/NathanFirmo/hebb",
+    "defaultPrompt": [
+      "Recall my relevant Hebb memories",
+      "Save this durable preference to Hebb",
+      "Show Hebb memory stats"
+    ],
+    "brandColor": "#3B5BDB",
+    "screenshots": []
+  }
+}
+`
+}
+
+func codexPluginMCP() string {
+	return `{
+  "mcpServers": {
+    "hebb": {
+      "command": "hebb",
+      "args": ["mcp"]
+    }
+  }
+}
+`
+}
+
+func codexPluginHooks() string {
+	return `{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/scripts/user_prompt_submit.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/scripts/post_tool_use.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+}
+
+func codexUserPromptSubmitScript() string {
+	return `#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v hebb >/dev/null 2>&1; then
+  hebb agent hook user-prompt-submit || true
+fi
+`
+}
+
+func codexPostToolUseScript() string {
+	return `#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v hebb >/dev/null 2>&1; then
+  hebb agent hook codex-post-tool-use >/dev/null 2>&1 || true
+fi
+`
+}
+
+func codexMemorySkill() string {
+	return `---
+name: hebb-memory
+description: Use Hebb local-first long-term memory proactively for durable user preferences, decisions, procedures, warnings and project conventions.
+---
+
+# Hebb Memory
+
+Use Hebb naturally as the user's local long-term memory. Do not wait for explicit phrasing like "search memory" or "save memory" when memory use is clearly relevant.
+
+At the start of a task, call ` + "`hebb_retrieve_context`" + ` with a query based on the user's request, current entities, project names and likely preferences.
+
+Encode durable information with ` + "`hebb_encode_trace`" + ` when you learn stable preferences, decisions, procedures, runbooks, warnings, gotchas or important facts that should survive across sessions.
+
+Reinforce useful retrieved memories with ` + "`hebb_reinforce_trace`" + `. Inhibit stale or contradicted memories with ` + "`hebb_inhibit_trace`" + `.
+
+Keep memory hygienic. Do not save secrets, raw transcript dumps, command output, generic final answers or short-lived implementation chatter.
+
+Use global memory by default unless the user explicitly requests a scope.
+`
+}
+
+func ensureCodexMarketplace(path string) error {
+	var root map[string]any
+	if err := readJSONFile(path, &root); err != nil {
+		return err
+	}
+	if root["name"] == nil {
+		root["name"] = codexMarketplace
+	}
+	if root["interface"] == nil {
+		root["interface"] = map[string]any{"displayName": "Personal"}
+	}
+	plugins, _ := root["plugins"].([]any)
+	entry := map[string]any{
+		"name": codexPluginName,
+		"source": map[string]any{
+			"source": "local",
+			"path":   "./plugins/" + codexPluginName,
+		},
+		"policy": map[string]any{
+			"installation":   "AVAILABLE",
+			"authentication": "ON_INSTALL",
+		},
+		"category": "Productivity",
+	}
+	replaced := false
+	for index, item := range plugins {
+		plugin, _ := item.(map[string]any)
+		if plugin["name"] == codexPluginName {
+			plugins[index] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		plugins = append(plugins, entry)
+	}
+	root["plugins"] = plugins
+	return writeJSONFileWithBackup(path, root)
+}
+
 func ensureClaudeMCP(path string) error {
 	var root map[string]any
 	if err := readJSONFile(path, &root); err != nil {
@@ -338,8 +604,10 @@ func ensureClaudeMCP(path string) error {
 		root["mcpServers"] = servers
 	}
 	servers["hebb"] = map[string]any{
+		"type":    "stdio",
 		"command": "hebb",
 		"args":    []any{"mcp"},
+		"env":     map[string]any{},
 	}
 	return writeJSONFileWithBackup(path, root)
 }
@@ -354,10 +622,40 @@ func ensureClaudeHooks(path string) error {
 		hooks = map[string]any{}
 		root["hooks"] = hooks
 	}
-	ensureClaudeHook(hooks, "SessionStart", "hebb agent hook session-start")
+	removeClaudeHook(hooks, "SessionStart", "hebb agent hook session-start")
 	ensureClaudeHook(hooks, "UserPromptSubmit", "hebb agent hook user-prompt-submit")
 	ensureClaudeHook(hooks, "Stop", "hebb agent hook stop")
 	return writeJSONFileWithBackup(path, root)
+}
+
+func removeClaudeHook(hooks map[string]any, event, command string) {
+	current, _ := hooks[event].([]any)
+	if len(current) == 0 {
+		return
+	}
+	var next []any
+	for _, item := range current {
+		entry, _ := item.(map[string]any)
+		hookItems, _ := entry["hooks"].([]any)
+		var nextHookItems []any
+		for _, hookItem := range hookItems {
+			hook, _ := hookItem.(map[string]any)
+			if hook["command"] == command {
+				continue
+			}
+			nextHookItems = append(nextHookItems, hookItem)
+		}
+		if len(nextHookItems) == 0 {
+			continue
+		}
+		entry["hooks"] = nextHookItems
+		next = append(next, entry)
+	}
+	if len(next) == 0 {
+		delete(hooks, event)
+		return
+	}
+	hooks[event] = next
 }
 
 func ensureClaudeHook(hooks map[string]any, event, command string) {

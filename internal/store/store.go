@@ -50,19 +50,19 @@ type TraceInput struct {
 }
 
 type RetrieveOptions struct {
-	Query  string
-	Kind   string
-	Scope  string
-	Status string
-	Limit  int
-	Vector []float32
+	Query          string
+	Kind           string
+	Scope          string
+	Status         string
+	Limit          int
+	Vector         []float32
+	MinVectorScore float64
 }
 
 type RetrievedTrace struct {
 	Trace            memory.Trace
 	Score            float64
 	VectorScore      float64
-	FTSScore         float64
 	AssociationScore float64
 }
 
@@ -322,19 +322,13 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 		opts.Limit = 10
 	}
 	candidates := map[int64]*RetrievedTrace{}
-	if strings.TrimSpace(opts.Query) != "" {
-		fts, err := s.retrieveFTS(ctx, opts)
-		if err == nil {
-			mergeCandidates(candidates, fts)
-		}
-	}
 	if len(opts.Vector) > 0 {
 		vec, err := s.retrieveVector(ctx, opts)
 		if err == nil {
 			mergeCandidates(candidates, vec)
 		}
 	}
-	if len(candidates) == 0 {
+	if len(candidates) == 0 && strings.TrimSpace(opts.Query) == "" {
 		recent, err := s.retrieveRecent(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -343,8 +337,15 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 	}
 	results := make([]RetrievedTrace, 0, len(candidates))
 	for _, item := range candidates {
+		minVectorScore := opts.MinVectorScore
+		if minVectorScore == 0 && strings.TrimSpace(opts.Query) != "" && len(opts.Vector) > 0 {
+			minVectorScore = 0.60
+		}
+		if minVectorScore > 0 && item.VectorScore < minVectorScore {
+			continue
+		}
 		item.AssociationScore = s.associationScore(ctx, item.Trace.ID)
-		item.Score = 0.30*item.VectorScore + 0.25*item.FTSScore + 0.20*item.AssociationScore + 0.15*strengthSignal(item.Trace) + 0.10*freshnessSignal(item.Trace)
+		item.Score = 0.55*item.VectorScore + 0.20*item.AssociationScore + 0.15*strengthSignal(item.Trace) + 0.10*freshnessSignal(item.Trace)
 		results = append(results, *item)
 	}
 	sortRetrieved(results)
@@ -355,35 +356,6 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 		_ = s.MarkRecalled(ctx, result.Trace.ID)
 	}
 	return results, nil
-}
-
-func (s *Store) retrieveFTS(ctx context.Context, opts RetrieveOptions) ([]RetrievedTrace, error) {
-	where, args := filters("t", opts)
-	args = append([]any{quoteFTS(opts.Query)}, args...)
-	args = append(args, opts.Limit*3)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.kind, t.title, t.body, t.scope, t.source, t.valence, t.confidence, t.strength, t.salience, t.status,
-		       t.created_at, t.updated_at, t.last_recalled_at, t.recall_count, t.metadata_json,
-		       1.0 / (1.0 + bm25(trace_fts)) AS fts_score
-		FROM trace_fts
-		JOIN traces t ON t.id = trace_fts.rowid
-		WHERE trace_fts MATCH ? `+where+`
-		ORDER BY bm25(trace_fts)
-		LIMIT ?
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RetrievedTrace
-	for rows.Next() {
-		var item RetrievedTrace
-		if err := scanTraceWithExtra(rows, &item.Trace, &item.FTSScore); err != nil {
-			return nil, err
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) retrieveVector(ctx context.Context, opts RetrieveOptions) ([]RetrievedTrace, error) {
@@ -641,9 +613,6 @@ func mergeCandidates(dst map[int64]*RetrievedTrace, src []RetrievedTrace) {
 			dst[item.Trace.ID] = &copy
 			continue
 		}
-		if item.FTSScore > existing.FTSScore {
-			existing.FTSScore = item.FTSScore
-		}
 		if item.VectorScore > existing.VectorScore {
 			existing.VectorScore = item.VectorScore
 		}
@@ -680,14 +649,6 @@ func sortRetrieved(items []RetrievedTrace) {
 			}
 		}
 	}
-}
-
-func quoteFTS(query string) string {
-	query = strings.TrimSpace(strings.ReplaceAll(query, `"`, `""`))
-	if query == "" {
-		return `""`
-	}
-	return `"` + query + `"`
 }
 
 func baseTraceSelect() string {

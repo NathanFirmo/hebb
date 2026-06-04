@@ -14,7 +14,6 @@ Hebb is not just another vector database. It is a local memory layer for agents,
 - One Go binary
 - One SQLite database file
 - Data stored by default in `~/.hebb/hebb.db`
-- SQLite FTS5 for lexical search
 - `sqlite-vec` for vector search inside SQLite
 - Ollama for local embeddings
 - Default embedding model: `mxbai-embed-large`
@@ -27,12 +26,12 @@ Hebb is not just another vector database. It is a local memory layer for agents,
 ollama pull mxbai-embed-large
 task build
 hebb init
-hebb encode --kind fact --title "Hebb is local" --body "Hebb stores memory in ~/.hebb/hebb.db with SQLite, FTS5 and sqlite-vec."
+hebb encode --kind fact --title "Hebb is local" --body "Hebb stores memory in ~/.hebb/hebb.db with SQLite and sqlite-vec."
 hebb retrieve "how does Hebb store memory?"
 hebb mcp
 ```
 
-Hebb uses `go-sqlite3` with SQLite FTS5, so local builds should use the project Taskfile or pass `-tags sqlite_fts5` manually.
+Hebb retrieval is embedding-first. Ollama should be running locally for `encode`, `retrieve` and agent hooks to produce semantic vectors.
 
 ## Use Cases
 
@@ -43,7 +42,7 @@ Hebb is useful when an agent needs durable local memory without sending data to 
 - **Operational runbooks**: encode procedures, warnings, incident observations and postmortem decisions, then retrieve them by service, scope or related entity.
 - **Research notebooks**: save observations, questions, facts and semantic summaries while associating related traces across topics.
 - **Agent coordination**: expose a local MCP server so multiple tools or agents can retrieve and reinforce the same memory base.
-- **Offline/private semantic recall**: combine SQLite FTS5, local Ollama embeddings and associative links while keeping the database in `~/.hebb/hebb.db`.
+- **Offline/private semantic recall**: combine local Ollama embeddings, `sqlite-vec` and associative links while keeping the database in `~/.hebb/hebb.db`.
 
 ## Data Location
 
@@ -73,7 +72,7 @@ hebb doctor
 # Stores a durable memory trace and links optional entities.
 hebb encode --kind decision --title "Use sqlite-vec" --body "Hebb keeps vectors inside SQLite." --entity Hebb --scope /repo
 
-# Retrieves memory using structured filters, FTS5 and vector search when embeddings are available.
+# Retrieves memory using local embeddings and sqlite-vec.
 hebb retrieve "how does Hebb store vectors?" --scope /repo --limit 10
 
 # Creates or reinforces an associative edge between two traces.
@@ -107,7 +106,7 @@ hebb mcp
 hebb agent install --agent codex --apply
 hebb agent install --agent claude --apply
 
-# Internal lifecycle entrypoints used by installed hooks.
+# Internal lifecycle entrypoints used by installed hooks and debugging.
 hebb agent hook session-start
 hebb agent hook user-prompt-submit
 hebb agent hook stop
@@ -137,23 +136,35 @@ hebb agent install --agent codex --apply
 hebb agent install --agent claude --apply
 ```
 
-Codex installation registers the `hebb` MCP server and writes managed memory instructions to `~/.codex/AGENTS.md`.
+Codex installation creates a local plugin at `~/plugins/hebb-memory`, adds it to `~/.agents/plugins/marketplace.json`, installs it with `codex plugin add hebb-memory --marketplace personal`, registers the `hebb` MCP server and writes managed memory instructions to `~/.codex/AGENTS.md`.
 
-Claude installation writes the `hebb` MCP server to `~/.claude/mcp.json`, adds lifecycle hooks to `~/.claude/settings.json`, and writes managed memory instructions to `~/.claude/CLAUDE.md`.
+The Codex plugin provides:
+
+- Hebb MCP configuration
+- a Hebb memory skill
+- `UserPromptSubmit` and `PostToolUse` hooks in the official plugin hook format
+
+Installed Codex hooks call:
+
+```bash
+hebb agent hook user-prompt-submit
+hebb agent hook codex-post-tool-use
+```
+
+Claude installation writes the `hebb` MCP server to `~/.claude.json`, adds lifecycle hooks to `~/.claude/settings.json`, and writes managed memory instructions to `~/.claude/CLAUDE.md`.
 
 Installed Claude hooks call:
 
 ```bash
-hebb agent hook session-start
 hebb agent hook user-prompt-submit
 hebb agent hook stop
 ```
 
-The hooks load relevant memory as additional context and conservatively capture durable-looking user prompts, such as explicit preferences, decisions, procedures and conventions. `stop` is intentionally non-capturing by default to avoid saving generic final answers, command outputs or task-status chatter. Hebb intentionally avoids saving every raw transcript line; memory should stay useful, not noisy.
+The `user-prompt-submit` hook loads relevant memory as additional context and conservatively captures durable-looking user prompts, such as explicit preferences, decisions, procedures and conventions. `SessionStart` is not installed by default because prompt-specific retrieval avoids duplicated context. `codex-post-tool-use` only captures explicit durable-looking tool context and suppresses output. `stop` is intentionally non-capturing by default to avoid saving generic final answers, command outputs or task-status chatter. Hebb intentionally avoids saving every raw transcript line; memory should stay useful, not noisy.
 
 ## Data Model
 
-Hebb stores memories as traces. Traces can be connected to entities, linked to each other by associations and audited through trace events. FTS5 mirrors trace text for lexical search, while `trace_vec` stores optional local embeddings when Ollama is available. Episodes are stored as temporal summary records in the MVP; explicit trace-to-episode linking can be added later if needed.
+Hebb stores memories as traces. Traces can be connected to entities, linked to each other by associations and audited through trace events. `trace_vec` stores local embeddings when Ollama is available. Episodes are stored as temporal summary records in the MVP; explicit trace-to-episode linking can be added later if needed.
 
 ```mermaid
 erDiagram
@@ -175,14 +186,6 @@ erDiagram
     integer recall_count
     text metadata_json
     integer embedding_pending
-  }
-
-  TRACE_FTS {
-    integer rowid FK
-    text title
-    text body
-    text kind
-    text scope
   }
 
   TRACE_VEC {
@@ -239,7 +242,6 @@ erDiagram
     text updated_at
   }
 
-  TRACES ||--o| TRACE_FTS : indexes
   TRACES ||--o| TRACE_VEC : embeds
   TRACES ||--o{ TRACE_ENTITIES : mentions
   ENTITIES ||--o{ TRACE_ENTITIES : appears_in
@@ -263,6 +265,6 @@ erDiagram
 
 ## Status
 
-This repository contains a functional MVP: SQLite storage, FTS5 lexical search, `sqlite-vec` registration, Ollama embedding calls with pending-vector fallback, trace/entity/association persistence, lifecycle commands, maintenance commands and a minimal MCP JSON-RPC server.
+This repository contains a functional MVP: SQLite storage, `sqlite-vec` registration, Ollama embedding calls with pending-vector fallback, trace/entity/association persistence, lifecycle commands, maintenance commands and a minimal MCP JSON-RPC server.
 
-If Ollama is unavailable, `encode` stores traces with `embedding_pending = true`, `retrieve` falls back to FTS5 and structured search, and `hebb maintain embed --pending` can backfill vectors later.
+If Ollama is unavailable, `encode` stores traces with `embedding_pending = true`, explicit `retrieve` queries return no semantic matches, and `hebb maintain embed --pending` can backfill vectors later.

@@ -56,6 +56,6 @@ hebb agent install --agent all
 
 Add `--apply` to write changes. Without `--apply`, Hebb prints the plan.
 
-Codex setup registers MCP and adds managed instructions. Claude setup registers MCP, adds lifecycle hooks and adds managed instructions. Hooks call `hebb agent hook ...` internally.
+Codex setup creates and installs a local `hebb-memory` plugin, registers MCP, adds a Hebb memory skill, adds `UserPromptSubmit` and `PostToolUse` hooks, and writes managed instructions. Claude setup registers MCP, adds `UserPromptSubmit` and `Stop` hooks, removes the older Hebb `SessionStart` hook if present, and adds managed instructions. Hooks call `hebb agent hook ...` internally.
 
-The hook capture policy is conservative: `session-start` and `user-prompt-submit` can load relevant context, `user-prompt-submit` may save explicit durable preferences or decisions, and `stop` does not save final assistant messages by default.
+The hook capture policy is conservative: `user-prompt-submit` loads prompt-specific context and may save explicit durable preferences or decisions, `codex-post-tool-use` suppresses output and only captures explicit durable-looking tool context, and `stop` does not save final assistant messages by default. `SessionStart` is not installed by default because it duplicates prompt-specific retrieval.
