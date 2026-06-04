@@ -342,17 +342,29 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 		}
 		mergeCandidates(candidates, recent)
 	}
+	hasFTSHit := false
+	for _, item := range candidates {
+		if item.FTSScore > 0 {
+			hasFTSHit = true
+			break
+		}
+	}
+
 	results := make([]RetrievedTrace, 0, len(candidates))
 	for _, item := range candidates {
 		minVectorScore := opts.MinVectorScore
 		if minVectorScore == 0 && strings.TrimSpace(opts.Query) != "" && len(opts.Vector) > 0 {
-			minVectorScore = 0.60
+			if hasFTSHit {
+				minVectorScore = 0.65
+			} else {
+				minVectorScore = 0.82
+			}
 		}
 		if minVectorScore > 0 && item.VectorScore > 0 && item.VectorScore < minVectorScore && item.FTSScore == 0 {
 			continue
 		}
 		item.AssociationScore = s.associationScore(ctx, item.Trace.ID)
-		item.Score = 0.40*item.VectorScore + 0.35*item.FTSScore + 0.10*item.AssociationScore + 0.10*strengthSignal(item.Trace) + 0.05*freshnessSignal(item.Trace)
+		item.Score = 0.55*item.VectorScore + 0.20*item.FTSScore + 0.10*item.AssociationScore + 0.10*strengthSignal(item.Trace) + 0.05*freshnessSignal(item.Trace)
 		results = append(results, *item)
 	}
 	sortRetrieved(results)

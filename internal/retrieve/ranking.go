@@ -9,8 +9,8 @@ type Signals struct {
 }
 
 func Score(s Signals) float64 {
-	return 0.40*s.VectorScore +
-		0.35*s.FTSScore +
+	return 0.55*s.VectorScore +
+		0.20*s.FTSScore +
 		0.10*s.AssociationScore +
 		0.10*s.SalienceStrengthConfidence +
 		0.05*s.FreshnessOrTemporalFit

@@ -127,13 +127,6 @@ func (i Installer) installClaude(ctx context.Context) error {
 	if err := ensureClaudeMCP(mcpPath); err != nil {
 		return err
 	}
-	settingsPath, err := expandHome("~/.claude/settings.json")
-	if err != nil {
-		return err
-	}
-	if err := ensureClaudeHooks(settingsPath); err != nil {
-		return err
-	}
 	instructionsPath, err := expandHome("~/.claude/CLAUDE.md")
 	if err != nil {
 		return err
@@ -141,7 +134,7 @@ func (i Installer) installClaude(ctx context.Context) error {
 	if err := upsertManagedBlock(instructionsPath, Instructions("claude")); err != nil {
 		return err
 	}
-	fmt.Fprintln(i.Stdout, "Claude configured with Hebb MCP, hooks and managed memory instructions.")
+	fmt.Fprintln(i.Stdout, "Claude configured with Hebb MCP and managed memory instructions.")
 	return nil
 }
 
@@ -160,9 +153,7 @@ Run with --apply to write these changes.`
 	if agent == "claude" {
 		return `Hebb agent install plan for Claude:
 - Add MCP server "hebb" to ~/.claude.json
-- Add UserPromptSubmit and Stop hooks to ~/.claude/settings.json
 - Upsert managed instructions in ~/.claude/CLAUDE.md
-- Hooks call hebb agent hook ... so context loading and capture happen automatically
 
 Run with --apply to write these changes.`
 	}
@@ -483,30 +474,7 @@ func codexPluginMCP() string {
 
 func codexPluginHooks() string {
 	return `{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$PLUGIN_ROOT/scripts/user_prompt_submit.sh\""
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$PLUGIN_ROOT/scripts/post_tool_use.sh\""
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {}
 }
 `
 }
@@ -528,6 +496,28 @@ set -euo pipefail
 if command -v hebb >/dev/null 2>&1; then
   hebb agent hook codex-post-tool-use >/dev/null 2>&1 || true
 fi
+`
+}
+
+func claudeMemorySkill() string {
+	return `---
+name: hebb-memory
+description: "Use Hebb local-first long-term memory proactively for durable user preferences, decisions, procedures, warnings and project conventions. Examples: \"search my memory for X\", \"save this to Hebb\", \"what do you remember about Y\""
+---
+
+# Hebb Memory
+
+Use Hebb naturally as the user's local long-term memory. Do not wait for explicit phrasing like "search memory" or "save memory" when memory use is clearly relevant.
+
+At the start of a task, call ` + "`hebb_retrieve_context`" + ` with a query based on the user's request, current entities, project names and likely preferences.
+
+Encode durable information with ` + "`hebb_encode_trace`" + ` when you learn stable preferences, decisions, procedures, runbooks, warnings, gotchas or important facts that should survive across sessions.
+
+Reinforce useful retrieved memories with ` + "`hebb_reinforce_trace`" + `. Inhibit stale or contradicted memories with ` + "`hebb_inhibit_trace`" + `.
+
+Keep memory hygienic. Do not save secrets, raw transcript dumps, command output, generic final answers or short-lived implementation chatter.
+
+Use global memory by default unless the user explicitly requests a scope.
 `
 }
 
@@ -612,20 +602,8 @@ func ensureClaudeMCP(path string) error {
 	return writeJSONFileWithBackup(path, root)
 }
 
-func ensureClaudeHooks(path string) error {
-	var root map[string]any
-	if err := readJSONFile(path, &root); err != nil {
-		return err
-	}
-	hooks, _ := root["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-		root["hooks"] = hooks
-	}
-	removeClaudeHook(hooks, "SessionStart", "hebb agent hook session-start")
-	ensureClaudeHook(hooks, "UserPromptSubmit", "hebb agent hook user-prompt-submit")
-	ensureClaudeHook(hooks, "Stop", "hebb agent hook stop")
-	return writeJSONFileWithBackup(path, root)
+func ensureClaudeHooks(_ string) error {
+	return nil
 }
 
 func removeClaudeHook(hooks map[string]any, event, command string) {
