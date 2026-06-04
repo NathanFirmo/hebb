@@ -14,6 +14,7 @@ Hebb is not just another vector database. It is a local memory layer for agents,
 - One Go binary
 - One SQLite database file
 - Data stored by default in `~/.hebb/hebb.db`
+- SQLite FTS5 for lexical search
 - `sqlite-vec` for vector search inside SQLite
 - Ollama for local embeddings
 - Default embedding model: `mxbai-embed-large`
@@ -26,12 +27,12 @@ Hebb is not just another vector database. It is a local memory layer for agents,
 ollama pull mxbai-embed-large
 task build
 hebb init
-hebb encode --kind fact --title "Hebb is local" --body "Hebb stores memory in ~/.hebb/hebb.db with SQLite and sqlite-vec."
+hebb encode --kind fact --title "Hebb is local" --body "Hebb stores memory in ~/.hebb/hebb.db with SQLite, FTS5 and sqlite-vec."
 hebb retrieve "how does Hebb store memory?"
 hebb mcp
 ```
 
-Hebb retrieval is embedding-first. Ollama should be running locally for `encode`, `retrieve` and agent hooks to produce semantic vectors.
+Hebb retrieval is hybrid: FTS5 provides exact lexical matches, while Ollama embeddings and `sqlite-vec` provide semantic matches. Explicit queries never fall back to unrelated recent memories.
 
 ## Use Cases
 
@@ -42,7 +43,7 @@ Hebb is useful when an agent needs durable local memory without sending data to 
 - **Operational runbooks**: encode procedures, warnings, incident observations and postmortem decisions, then retrieve them by service, scope or related entity.
 - **Research notebooks**: save observations, questions, facts and semantic summaries while associating related traces across topics.
 - **Agent coordination**: expose a local MCP server so multiple tools or agents can retrieve and reinforce the same memory base.
-- **Offline/private semantic recall**: combine local Ollama embeddings, `sqlite-vec` and associative links while keeping the database in `~/.hebb/hebb.db`.
+- **Offline/private semantic recall**: combine SQLite FTS5, local Ollama embeddings, `sqlite-vec` and associative links while keeping the database in `~/.hebb/hebb.db`.
 
 ## Data Location
 
@@ -72,7 +73,7 @@ hebb doctor
 # Stores a durable memory trace and links optional entities.
 hebb encode --kind decision --title "Use sqlite-vec" --body "Hebb keeps vectors inside SQLite." --entity Hebb --scope /repo
 
-# Retrieves memory using local embeddings and sqlite-vec.
+# Retrieves memory using FTS5, local embeddings and sqlite-vec.
 hebb retrieve "how does Hebb store vectors?" --scope /repo --limit 10
 
 # Creates or reinforces an associative edge between two traces.
@@ -164,7 +165,7 @@ The `user-prompt-submit` hook loads relevant memory as additional context and co
 
 ## Data Model
 
-Hebb stores memories as traces. Traces can be connected to entities, linked to each other by associations and audited through trace events. `trace_vec` stores local embeddings when Ollama is available. Episodes are stored as temporal summary records in the MVP; explicit trace-to-episode linking can be added later if needed.
+Hebb stores memories as traces. Traces can be connected to entities, linked to each other by associations and audited through trace events. FTS5 mirrors trace text for exact lexical search, while `trace_vec` stores local embeddings when Ollama is available. Episodes are stored as temporal summary records in the MVP; explicit trace-to-episode linking can be added later if needed.
 
 ```mermaid
 erDiagram
@@ -186,6 +187,14 @@ erDiagram
     integer recall_count
     text metadata_json
     integer embedding_pending
+  }
+
+  TRACE_FTS {
+    integer rowid FK
+    text title
+    text body
+    text kind
+    text scope
   }
 
   TRACE_VEC {
@@ -242,6 +251,7 @@ erDiagram
     text updated_at
   }
 
+  TRACES ||--o| TRACE_FTS : indexes
   TRACES ||--o| TRACE_VEC : embeds
   TRACES ||--o{ TRACE_ENTITIES : mentions
   ENTITIES ||--o{ TRACE_ENTITIES : appears_in
@@ -265,6 +275,6 @@ erDiagram
 
 ## Status
 
-This repository contains a functional MVP: SQLite storage, `sqlite-vec` registration, Ollama embedding calls with pending-vector fallback, trace/entity/association persistence, lifecycle commands, maintenance commands and a minimal MCP JSON-RPC server.
+This repository contains a functional MVP: SQLite storage, FTS5 lexical search, `sqlite-vec` registration, Ollama embedding calls with pending-vector fallback, trace/entity/association persistence, lifecycle commands, maintenance commands and a minimal MCP JSON-RPC server.
 
-If Ollama is unavailable, `encode` stores traces with `embedding_pending = true`, explicit `retrieve` queries return no semantic matches, and `hebb maintain embed --pending` can backfill vectors later.
+If Ollama is unavailable, `encode` stores traces with `embedding_pending = true`, explicit `retrieve` queries can still use FTS5 lexical matches, and `hebb maintain embed --pending` can backfill vectors later.

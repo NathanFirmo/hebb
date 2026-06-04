@@ -63,6 +63,7 @@ type RetrievedTrace struct {
 	Trace            memory.Trace
 	Score            float64
 	VectorScore      float64
+	FTSScore         float64
 	AssociationScore float64
 }
 
@@ -322,6 +323,12 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 		opts.Limit = 10
 	}
 	candidates := map[int64]*RetrievedTrace{}
+	if strings.TrimSpace(opts.Query) != "" {
+		fts, err := s.retrieveFTS(ctx, opts)
+		if err == nil {
+			mergeCandidates(candidates, fts)
+		}
+	}
 	if len(opts.Vector) > 0 {
 		vec, err := s.retrieveVector(ctx, opts)
 		if err == nil {
@@ -341,11 +348,11 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 		if minVectorScore == 0 && strings.TrimSpace(opts.Query) != "" && len(opts.Vector) > 0 {
 			minVectorScore = 0.60
 		}
-		if minVectorScore > 0 && item.VectorScore < minVectorScore {
+		if minVectorScore > 0 && item.VectorScore > 0 && item.VectorScore < minVectorScore && item.FTSScore == 0 {
 			continue
 		}
 		item.AssociationScore = s.associationScore(ctx, item.Trace.ID)
-		item.Score = 0.55*item.VectorScore + 0.20*item.AssociationScore + 0.15*strengthSignal(item.Trace) + 0.10*freshnessSignal(item.Trace)
+		item.Score = 0.40*item.VectorScore + 0.35*item.FTSScore + 0.10*item.AssociationScore + 0.10*strengthSignal(item.Trace) + 0.05*freshnessSignal(item.Trace)
 		results = append(results, *item)
 	}
 	sortRetrieved(results)
@@ -356,6 +363,35 @@ func (s *Store) Retrieve(ctx context.Context, opts RetrieveOptions) ([]Retrieved
 		_ = s.MarkRecalled(ctx, result.Trace.ID)
 	}
 	return results, nil
+}
+
+func (s *Store) retrieveFTS(ctx context.Context, opts RetrieveOptions) ([]RetrievedTrace, error) {
+	where, args := filters("t", opts)
+	args = append([]any{quoteFTS(opts.Query)}, args...)
+	args = append(args, opts.Limit*3)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT t.id, t.kind, t.title, t.body, t.scope, t.source, t.valence, t.confidence, t.strength, t.salience, t.status,
+		       t.created_at, t.updated_at, t.last_recalled_at, t.recall_count, t.metadata_json,
+		       1.0 / (1.0 + bm25(trace_fts)) AS fts_score
+		FROM trace_fts
+		JOIN traces t ON t.id = trace_fts.rowid
+		WHERE trace_fts MATCH ? `+where+`
+		ORDER BY bm25(trace_fts)
+		LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RetrievedTrace
+	for rows.Next() {
+		var item RetrievedTrace
+		if err := scanTraceWithExtra(rows, &item.Trace, &item.FTSScore); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) retrieveVector(ctx context.Context, opts RetrieveOptions) ([]RetrievedTrace, error) {
@@ -613,6 +649,9 @@ func mergeCandidates(dst map[int64]*RetrievedTrace, src []RetrievedTrace) {
 			dst[item.Trace.ID] = &copy
 			continue
 		}
+		if item.FTSScore > existing.FTSScore {
+			existing.FTSScore = item.FTSScore
+		}
 		if item.VectorScore > existing.VectorScore {
 			existing.VectorScore = item.VectorScore
 		}
@@ -648,6 +687,76 @@ func sortRetrieved(items []RetrievedTrace) {
 				items[i], items[j] = items[j], items[i]
 			}
 		}
+	}
+}
+
+func quoteFTS(query string) string {
+	tokens := ftsQueryTokens(query)
+	if len(tokens) == 0 {
+		return `""`
+	}
+	var terms []string
+	for _, token := range tokens {
+		terms = append(terms, token+"*")
+	}
+	return strings.Join(terms, " AND ")
+}
+
+func ftsQueryTokens(query string) []string {
+	words := strings.FieldsFunc(normalizeFTSQuery(query), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	seen := map[string]bool{}
+	var tokens []string
+	for _, word := range words {
+		word = stemFTSToken(word)
+		if len(word) < 3 || ftsStopWord(word) || seen[word] {
+			continue
+		}
+		seen[word] = true
+		tokens = append(tokens, word)
+	}
+	return tokens
+}
+
+func stemFTSToken(token string) string {
+	if len(token) <= 5 {
+		return token
+	}
+	token = strings.TrimSuffix(token, "s")
+	if len(token) > 5 {
+		last := token[len(token)-1]
+		if last == 'a' || last == 'e' || last == 'o' {
+			token = token[:len(token)-1]
+		}
+	}
+	return token
+}
+
+func normalizeFTSQuery(query string) string {
+	query = strings.ToLower(query)
+	replacements := map[string]string{
+		"á": "a", "à": "a", "â": "a", "ã": "a",
+		"é": "e", "ê": "e",
+		"í": "i",
+		"ó": "o", "ô": "o", "õ": "o",
+		"ú": "u",
+		"ç": "c",
+	}
+	for from, to := range replacements {
+		query = strings.ReplaceAll(query, from, to)
+	}
+	return query
+}
+
+func ftsStopWord(word string) bool {
+	switch word {
+	case "que", "voce", "sabe", "sobre", "minha", "minhas", "meu", "meus",
+		"como", "qual", "quais", "pra", "para", "por", "com", "sem",
+		"dos", "das", "uma", "uns", "umas", "isso", "esse", "essa":
+		return true
+	default:
+		return false
 	}
 }
 

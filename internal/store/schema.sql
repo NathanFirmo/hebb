@@ -28,6 +28,32 @@ CREATE TABLE IF NOT EXISTS traces (
   CHECK (status IN ('active', 'inhibited', 'consolidated', 'archived', 'forgotten'))
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS trace_fts USING fts5(
+  title,
+  body,
+  kind,
+  scope,
+  content='traces',
+  content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS traces_ai AFTER INSERT ON traces BEGIN
+  INSERT INTO trace_fts(rowid, title, body, kind, scope)
+  VALUES (new.id, new.title, new.body, new.kind, new.scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS traces_ad AFTER DELETE ON traces BEGIN
+  INSERT INTO trace_fts(trace_fts, rowid, title, body, kind, scope)
+  VALUES ('delete', old.id, old.title, old.body, old.kind, old.scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS traces_au AFTER UPDATE ON traces BEGIN
+  INSERT INTO trace_fts(trace_fts, rowid, title, body, kind, scope)
+  VALUES ('delete', old.id, old.title, old.body, old.kind, old.scope);
+  INSERT INTO trace_fts(rowid, title, body, kind, scope)
+  VALUES (new.id, new.title, new.body, new.kind, new.scope);
+END;
+
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
